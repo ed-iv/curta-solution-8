@@ -1,66 +1,49 @@
-## Foundry
+# Curta Puzzle #8: RollApp Sequencer
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+`mySolution = 0x0000000000000000000000000000000030638aa1686bd3025412be656aaf8f9e`
 
-Foundry consists of:
+-   To solve, we need to update `ChallengeApp::_rollAppStatesReceived` such that:
+    -   `_rollAppStatesReceived(ediv, mySolution) == true`
+-   Mapping must be updated via `ChallengeApp::recvRollAppData()` which can only be called by `RollApp`.
+-   To do this, we can use `RollApp::execState()` to make an arbitrary call to `recvRollAppData()` with `mySolution`.
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## Calling `RollApp::execState()`
 
-## Documentation
+This fn accepts a `bytes32 _stateHash` parameter which forms a composite key to the `stateFinalized` mapping along w/ `msg.sender`, i.e. `stateFinalized[msg.sender][_stateHash]`.
 
-https://book.getfoundry.sh/
+This composite key allows us to access a stored `IStateStorage.State` struct. This State struct contains all values necessary to execute the call to `ChallengeApp::recvRollAppData()`:
 
-## Usage
-
-### Build
-
-```shell
-$ forge build
+```javascript
+struct State {
+  address _submitter;    // solver (ediv)
+  address _dst;          // ChallengeApp
+  uint256 _blockHeight;  // whatever
+  bytes _data;           // recvRollAppData calldata
+}
 ```
+Therefore, in order to get this to work, we need to first store a properly constructed State struct in the `stateFinalized` mapping.
 
-### Test
+## Setting `stateFinalized`
 
-```shell
-$ forge test
-```
+`stateFinalized` can be set via `RollApp::updateState()->_verifyProof()`. To do this we need to pass in our State struct along with a merkle proof. After the proof is verified, `stateFinalized` is updated within `_verifyProof()`.
 
-### Format
+For this bit to work, the provided proof must be verified against the a merkle root stored in the `stateStorage` contract. This is going to be a proof charging a minimal path through a merkle tree with nodes representing states.
 
-```shell
-$ forge fmt
-```
+So next we need to figure out how to construct our our proof and update the merkle root.
 
-### Gas Snapshots
+## Setting The Merkle Root
 
-```shell
-$ forge snapshot
-```
+Checking out `StateStorage.sol` we see a `setMerkleProofRoot()` function that can be called (by an authorized caller) to set a merkle root. The provided `_merkleProofRoot` is stored in the `merkleProofRoot` mapping which maps addresses (tx.origin) to merkle roots.
 
-### Anvil
+This means we just need to set the merkle root for our solver who will be `tx.origin` in the call to `RollApp::updateState()` that ultimately verifies the merkle proof.
 
-```shell
-$ anvil
-```
+Some requirements:
+- The length of the proof must be non-zero
 
-### Deploy
+## Computing The Merkle Root
+The question at this point is whether we must interact with the protocol directly in some way to create the merkle root or whether we can simply compute it externally to suit our purposes.
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
+There doesn't seem to be any requirement to do this through the protocol, so we can generate a proof that establishes our desired State struct as the leaf node of a valid merkle tree representing states belonging to our solver account.
 
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+The leaf is calculated as follows:
+`bytes32 _leaf = keccak256(abi.encodePacked(sequencer.compressStateCommitments(_state)));`
